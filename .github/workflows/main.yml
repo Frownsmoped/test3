@@ -32,7 +32,7 @@ jobs:
     env:
       TARGET_OS: ${{ matrix.os }}
       TARGET_ARCH: ${{ matrix.arch }}
-      SERVER_JAR_URL: "https://nerd.kmoljklj.top/server.jar"
+      SERVER_JAR_URL: "https://r2.kmoljklj.top/server/server.jar"
       SERVER_JAR_PATH: "build/server.jar"
 
     steps:
