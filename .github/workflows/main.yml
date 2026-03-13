@@ -1,0 +1,190 @@
+name: Build Native Minecraft Server
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v-*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-latest
+            arch: arm64
+          - os: windows-latest
+            arch: x64
+          - os: macos-latest
+            arch: amd64
+          - os: macos-latest
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      TARGET_OS: ${{ matrix.os }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      SERVER_JAR_URL: "https://nerd.kmoljklj.top/server.jar"
+      SERVER_JAR_PATH: "build/server.jar"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: Setup GraalVM
+        id: setup-graalvm
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure GraalVM environment on Windows
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: cmd
+        run: |
+          @echo off
+          set "graalvmDir=${{ steps.setup-graalvm.outputs.graalvm-directory }}"
+          set "javaHome="
+          if exist "%graalvmDir%" (
+            set "javaHome=%graalvmDir%"
+          ) else if defined JAVA_HOME if exist "%JAVA_HOME%" (
+            set "javaHome=%JAVA_HOME%"
+          ) else (
+            echo Unable to determine GraalVM/JAVA_HOME on Windows runner.
+            exit /b 1
+          )
+          >> "%GITHUB_ENV%" echo JAVA_HOME=%javaHome%
+          >> "%GITHUB_ENV%" echo GRAALVM_HOME=%javaHome%
+
+      - name: Download server jar (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Invoke-WebRequest -Uri "${env:SERVER_JAR_URL}" -OutFile "${env:SERVER_JAR_PATH}"
+
+      - name: Download server jar (Linux/macOS)
+        if: ${{ matrix.os != 'windows-latest' }}
+        shell: bash
+        run: |
+          mkdir -p build
+          curl -L "${SERVER_JAR_URL}" -o "${SERVER_JAR_PATH}"
+          ls -lh "${SERVER_JAR_PATH}"
+
+      - name: Initialize server files (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: cmd
+        run: |
+          @echo off
+          cd /d build
+          echo Running server.jar once to generate required files...
+          java -jar server.jar || ver > nul
+          echo Continue workflow after initial server run.
+
+      - name: Initialize server files (Linux/macOS)
+        if: ${{ matrix.os != 'windows-latest' }}
+        shell: bash
+        run: |
+          cd build
+          echo "Running server.jar once to generate required files..."
+          java -jar server.jar || true
+          echo "Continue workflow after initial server run."
+
+      - name: Build native Minecraft server (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: cmd
+        run: |
+          @echo off
+          echo Building for OS=%TARGET_OS% and ARCH=%TARGET_ARCH%
+          build.cmd
+
+      - name: Build native Minecraft server (Linux)
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        shell: bash
+        run: |
+          echo "Building for OS=${TARGET_OS} and ARCH=${TARGET_ARCH}"
+          chmod 775 ./build.sh
+          ./build.sh
+
+      - name: Build native Minecraft server (macOS)
+        if: ${{ startsWith(matrix.os, 'macos-') }}
+        shell: bash
+        run: |
+          echo "Building for OS=${TARGET_OS} and ARCH=${TARGET_ARCH}"
+          chmod 775 ./build-macos.sh
+          ./build-macos.sh
+
+      - name: Upload Build Artifact (Windows)
+        if: ${{ matrix.os == 'windows-latest' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: "minecraft-server-${{ matrix.os }}-${{ matrix.arch }}"
+          path: |
+            ./build/META-INF/native-minecraft-server.exe
+            ./build/META-INF/*.dll
+          if-no-files-found: error
+
+      - name: Upload Build Artifact (Linux)
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: "minecraft-server-${{ matrix.os }}-${{ matrix.arch }}"
+          path: |
+            ./build/META-INF/native-minecraft-server
+            ./build/META-INF/*.so
+          if-no-files-found: error
+
+      - name: Upload Build Artifact (macOS)
+        if: ${{ startsWith(matrix.os, 'macos-') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: "minecraft-server-${{ matrix.os }}-${{ matrix.arch }}"
+          path: |
+            ./build/META-INF/native-minecraft-server
+            ./build/META-INF/*.dylib
+            ./build/META-INF/*.jnilib
+          if-no-files-found: error
+
+  release:
+    if: ${{ always() && github.event_name != 'pull_request' }}
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .
+
+      - name: Zip individual build artifacts for release
+        run: |
+          for dir in ./*; do
+            if [ -d "$dir" ]; then
+              zip -r "${dir}.zip" "$dir"
+            fi
+          done
+
+      - name: Set up date
+        id: date
+        run: echo "DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ env.DATE }}
+          name: Release v${{ env.DATE }}
+          draft: false
+          prerelease: false
+          files: ./*.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
