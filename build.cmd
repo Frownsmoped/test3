@@ -1,6 +1,10 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+rem Build a native-image with a self-controlled entrypoint (SelfMain)
+rem - Ensures eula.txt contains eula=true at runtime
+rem - Delegates to org.bukkit.craftbukkit.Main
+
 set "SERVER_VERSION=%SERVER_VERSION%"
 if not defined SERVER_VERSION set "SERVER_VERSION=1.21.11"
 
@@ -8,14 +12,19 @@ set "SCRIPT_DIR=%~dp0"
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "AGENT_CONFIG_DIR=%SCRIPT_DIR%\configuration"
 set "BUILD_DIR=%SCRIPT_DIR%\build"
+set "WORK_DIR=%SCRIPT_DIR%\work"
 set "JAR_PATH=%BUILD_DIR%\server.jar"
-set "BUNDLED_JAR=%SCRIPT_DIR%\server.jar"
 set "ZIP_PATH=%BUILD_DIR%\server.zip"
 set "META_INF_PATH=%BUILD_DIR%\META-INF"
-set "BINARY_NAME=native-minecraft-server"
+set "BINARY_NAME=native-minecraft-server-self"
 set "ORIGINAL_SPIGOT_JAR=%SCRIPT_DIR%\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar"
 set "LIBRARIES_DIR=%META_INF_PATH%\libraries"
 set "LIBRARIES_LIST=%META_INF_PATH%\libraries.list"
+
+set "SELF_MAIN_SRC=%WORK_DIR%\SelfMain.java"
+set "SELF_CLASSES_DIR=%BUILD_DIR%\self-classes"
+set "SELF_JAR=%BUILD_DIR%\self-main.jar"
+set "SELF_MAIN_CLASS=SelfMain"
 
 if not defined GRAALVM_HOME (
     echo $GRAALVM_HOME is not set. Please provide a GraalVM installation. Exiting...
@@ -32,14 +41,13 @@ if not exist "%NI_EXEC%" (
     exit /b 1
 )
 
+if not exist "%SELF_MAIN_SRC%" (
+    echo Missing %SELF_MAIN_SRC%. Exiting...
+    exit /b 1
+)
+
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 pushd "%BUILD_DIR%" || exit /b 1
-
-REM Prefer a repository-provided bootstrap jar (for deterministic CI builds)
-if exist "%BUNDLED_JAR%" (
-    echo Using bundled server.jar from: %BUNDLED_JAR%
-    copy /y "%BUNDLED_JAR%" "%JAR_PATH%" >nul || exit /b 1
-)
 
 if not exist "%JAR_PATH%" (
     echo Downloading Minecraft's server.jar...
@@ -166,7 +174,7 @@ if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
     echo Using patched jar on classpath: !PATCHED_JAR!
     set "CLASSPATH_JOINED=!PATCHED_JAR!;!CLASSPATH_JOINED!"
     set "MAIN_CLASS=org.bukkit.craftbukkit.Main"
-    echo Using direct main class for native image: !MAIN_CLASS!
+    echo Using direct main class for server: !MAIN_CLASS!
 
     set "PATCHED_JAR_REL=META-INF/versions/%SERVER_VERSION%/spigot-%SERVER_VERSION%.jar"
     if not exist "%BUILD_DIR%\META-INF\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar" (
@@ -179,6 +187,24 @@ if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
         exit /b 1
     )
 )
+
+rem --------------------------------------------------------------------------
+rem Build SelfMain into a tiny jar and prepend it to the classpath
+rem --------------------------------------------------------------------------
+echo Building %SELF_MAIN_CLASS%...
+if exist "%SELF_CLASSES_DIR%" rmdir /s /q "%SELF_CLASSES_DIR%"
+mkdir "%SELF_CLASSES_DIR%" || exit /b 1
+
+rem Compile with server classpath available (so org.bukkit.craftbukkit.Main resolves)
+"%GRAALVM_HOME%\bin\javac.exe" -encoding UTF-8 -cp "%CLASSPATH_JOINED%" -d "%SELF_CLASSES_DIR%" "%SELF_MAIN_SRC%"
+if errorlevel 1 exit /b %errorlevel%
+
+if exist "%SELF_JAR%" del /f /q "%SELF_JAR%"
+"%GRAALVM_HOME%\bin\jar.exe" --create --file "%SELF_JAR%" -C "%SELF_CLASSES_DIR%" .
+if errorlevel 1 exit /b %errorlevel%
+
+set "CLASSPATH_JOINED=%SELF_JAR%;%CLASSPATH_JOINED%"
+echo Self jar added to classpath: %SELF_JAR%
 
 set "JNA_TMPDIR=%META_INF_PATH%\.jna"
 if not exist "%JNA_TMPDIR%" mkdir "%JNA_TMPDIR%"
@@ -197,7 +223,7 @@ if exist "%SCRIPT_DIR%\%BINARY_NAME%.exe" (
     del /f /q "%SCRIPT_DIR%\%BINARY_NAME%.exe"
 )
 
-set "NI_ARG_FILE=%BUILD_DIR%\native-image.args"
+set "NI_ARG_FILE=%BUILD_DIR%\native-image-self.args"
 if exist "%NI_ARG_FILE%" del /f /q "%NI_ARG_FILE%"
 
 (
@@ -220,29 +246,15 @@ if exist "%NI_ARG_FILE%" del /f /q "%NI_ARG_FILE%"
     echo --initialize-at-run-time=org.apache.logging.log4j
     echo --initialize-at-run-time=joptsimple
     echo --initialize-at-run-time=org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry
-    echo --add-modules=java.desktop
-    echo -J-Djava.awt.headless=true
-    echo -Djava.awt.headless=true
     echo -H:Name=%BINARY_NAME%
     echo -cp
     echo %CLASSPATH_JOINED_ARG%
     if defined PATCHED_JAR_REL echo -H:IncludeResources=\\Q%PATCHED_JAR_REL%\\E
 ) > "%NI_ARG_FILE%"
 
-echo Launching native-image build...
+echo Launching native-image build ^(SelfMain entrypoint^)...
 echo Native-image args file: %NI_ARG_FILE%
-call "%NI_EXEC%" @"%NI_ARG_FILE%" %* "%MAIN_CLASS%"
-
-REM Create a simple wrapper that always runs headless and disables GUI (works even if the binary itself
-REM still tries to initialize AWT on some code paths).
-set "WRAPPER=%META_INF_PATH%\%BINARY_NAME%-nogui.cmd"
-(
-    echo @echo off
-    echo setlocal
-    echo REM Force headless AWT in addition to --nogui to prevent any accidental GUI/font init
-    echo set "JAVA_TOOL_OPTIONS=-Djava.awt.headless=true"
-    echo "%META_INF_PATH%\%BINARY_NAME%.exe" --nogui
-) > "%WRAPPER%"
+call "%NI_EXEC%" @"%NI_ARG_FILE%" %* "%SELF_MAIN_CLASS%"
 if errorlevel 1 exit /b %errorlevel%
 
 if not exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
@@ -258,7 +270,7 @@ popd
 popd
 
 echo.
-echo Done! The native Minecraft server is located at:
+echo Done! The self-entry native Minecraft server is located at:
 if exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
     echo %META_INF_PATH%\%BINARY_NAME%.exe
 ) else (
