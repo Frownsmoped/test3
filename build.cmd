@@ -9,6 +9,7 @@ if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "AGENT_CONFIG_DIR=%SCRIPT_DIR%\configuration"
 set "BUILD_DIR=%SCRIPT_DIR%\build"
 set "JAR_PATH=%BUILD_DIR%\server.jar"
+set "BUNDLED_JAR=%SCRIPT_DIR%\server.jar"
 set "ZIP_PATH=%BUILD_DIR%\server.zip"
 set "META_INF_PATH=%BUILD_DIR%\META-INF"
 set "BINARY_NAME=native-minecraft-server"
@@ -33,6 +34,12 @@ if not exist "%NI_EXEC%" (
 
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 pushd "%BUILD_DIR%" || exit /b 1
+
+REM Prefer a repository-provided bootstrap jar (for deterministic CI builds)
+if exist "%BUNDLED_JAR%" (
+    echo Using bundled server.jar from: %BUNDLED_JAR%
+    copy /y "%BUNDLED_JAR%" "%JAR_PATH%" >nul || exit /b 1
+)
 
 if not exist "%JAR_PATH%" (
     echo Downloading Minecraft's server.jar...
@@ -111,10 +118,6 @@ set "PATCHED_JAR_REL="
 if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
     echo Detected Paperclip server jar.
 
-    if exist "%GRAALVM_HOME%\bin\javap.exe" (
-        python "%SCRIPT_DIR%\work\decompile_main.py" --javap "%GRAALVM_HOME%\bin\javap.exe" --jar "%JAR_PATH%" --out "%BUILD_DIR%\decompile_main_serverjar.txt" >nul 2>&1
-    )
-
     for /r "%META_INF_PATH%\versions" %%I in (spigot-*.jar) do if not defined PATCHED_JAR set "PATCHED_JAR=%%~fI"
 
     if defined PATCHED_JAR (
@@ -158,10 +161,6 @@ if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
         pushd "%BUILD_DIR%\patch\jar" || exit /b 1
         "%GRAALVM_HOME%\bin\jar.exe" uf "!PATCHED_JAR!" org/bukkit/craftbukkit/Main.class || exit /b 1
         popd || exit /b 1
-    )
-
-    if exist "%GRAALVM_HOME%\bin\javap.exe" (
-        python "%SCRIPT_DIR%\work\decompile_main.py" --javap "%GRAALVM_HOME%\bin\javap.exe" --jar "!PATCHED_JAR!" --out "%BUILD_DIR%\decompile_main_patchedjar.txt" >nul 2>&1
     )
 
     echo Using patched jar on classpath: !PATCHED_JAR!
@@ -221,6 +220,9 @@ if exist "%NI_ARG_FILE%" del /f /q "%NI_ARG_FILE%"
     echo --initialize-at-run-time=org.apache.logging.log4j
     echo --initialize-at-run-time=joptsimple
     echo --initialize-at-run-time=org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry
+    echo --add-modules=java.desktop
+    echo -J-Djava.awt.headless=true
+    echo -Djava.awt.headless=true
     echo -H:Name=%BINARY_NAME%
     echo -cp
     echo %CLASSPATH_JOINED_ARG%
@@ -230,6 +232,17 @@ if exist "%NI_ARG_FILE%" del /f /q "%NI_ARG_FILE%"
 echo Launching native-image build...
 echo Native-image args file: %NI_ARG_FILE%
 call "%NI_EXEC%" @"%NI_ARG_FILE%" %* "%MAIN_CLASS%"
+
+REM Create a simple wrapper that always runs headless and disables GUI (works even if the binary itself
+REM still tries to initialize AWT on some code paths).
+set "WRAPPER=%META_INF_PATH%\%BINARY_NAME%-nogui.cmd"
+(
+    echo @echo off
+    echo setlocal
+    echo REM Force headless AWT in addition to --nogui to prevent any accidental GUI/font init
+    echo set "JAVA_TOOL_OPTIONS=-Djava.awt.headless=true"
+    echo "%META_INF_PATH%\%BINARY_NAME%.exe" --nogui
+) > "%WRAPPER%"
 if errorlevel 1 exit /b %errorlevel%
 
 if not exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
