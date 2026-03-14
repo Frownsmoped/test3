@@ -11,6 +11,8 @@ set "BUILD_DIR=%SCRIPT_DIR%\build"
 set "JAR_PATH=%BUILD_DIR%\server.jar"
 set "META_INF_PATH=%BUILD_DIR%\META-INF"
 set "BINARY_NAME=native-minecraft-server"
+set "SELFMAIN_BUILD_DIR=%BUILD_DIR%\selfmain"
+set "SELFMAIN_CLASS=SelfMain"
 set "ORIGINAL_SPIGOT_JAR=%SCRIPT_DIR%\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar"
 set "LIBRARIES_DIR=%META_INF_PATH%\libraries"
 set "LIBRARIES_LIST=%META_INF_PATH%\libraries.list"
@@ -139,10 +141,18 @@ if /i not "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
         echo Verifying updated target spigot jar really contains patched Main.class...
         python "%BUILD_DIR%\patch\patch_sleep.py" "!TARGET_SPIGOT_JAR!" --in-jar --verify-only || exit /b 1
 
-        REM Force classpath/main-class to use this exact jar's CraftBukkit Main directly.
-        set "CLASSPATH_JOINED=!TARGET_SPIGOT_JAR!;!CLASSPATH_JOINED!"
-        set "MAIN_CLASS=org.bukkit.craftbukkit.Main"
-        echo Using direct main class for native image: !MAIN_CLASS!
+        REM Compile SelfMain with the same classpath, then make it the native-image entrypoint.
+        if exist "%SELFMAIN_BUILD_DIR%" rmdir /s /q "%SELFMAIN_BUILD_DIR%"
+        mkdir "%SELFMAIN_BUILD_DIR%" >nul 2>&1
+        echo Compiling SelfMain.java...
+        "%GRAALVM_HOME%\bin\javac.exe" -cp "!TARGET_SPIGOT_JAR!;!CLASSPATH_JOINED!" -d "%SELFMAIN_BUILD_DIR%" "%SCRIPT_DIR%\work\SelfMain.java" || exit /b 1
+        if not exist "%SELFMAIN_BUILD_DIR%\SelfMain.class" (
+            echo SelfMain compilation failed: %SELFMAIN_BUILD_DIR%\SelfMain.class not found
+            exit /b 1
+        )
+        set "CLASSPATH_JOINED=%SELFMAIN_BUILD_DIR%;!TARGET_SPIGOT_JAR!;!CLASSPATH_JOINED!"
+        set "MAIN_CLASS=%SELFMAIN_CLASS%"
+        echo Using SelfMain for native image: !MAIN_CLASS!
     )
 )
 
@@ -197,9 +207,18 @@ if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
     )
 
     echo Using patched jar on classpath: !PATCHED_JAR!
-    set "CLASSPATH_JOINED=!PATCHED_JAR!;!CLASSPATH_JOINED!"
-    set "MAIN_CLASS=org.bukkit.craftbukkit.Main"
-    echo Using direct main class for native image: !MAIN_CLASS!
+    REM Compile SelfMain.java against the full runtime classpath and use it as entrypoint.
+    if exist "%SELFMAIN_BUILD_DIR%" rmdir /s /q "%SELFMAIN_BUILD_DIR%"
+    mkdir "%SELFMAIN_BUILD_DIR%" >nul 2>&1
+    echo Compiling SelfMain.java...
+    "%GRAALVM_HOME%\bin\javac.exe" -cp "!PATCHED_JAR!;!CLASSPATH_JOINED!" -d "%SELFMAIN_BUILD_DIR%" "%SCRIPT_DIR%\work\SelfMain.java" || exit /b 1
+    if not exist "%SELFMAIN_BUILD_DIR%\SelfMain.class" (
+        echo SelfMain compilation failed: %SELFMAIN_BUILD_DIR%\SelfMain.class not found
+        exit /b 1
+    )
+    set "CLASSPATH_JOINED=%SELFMAIN_BUILD_DIR%;!PATCHED_JAR!;!CLASSPATH_JOINED!"
+    set "MAIN_CLASS=%SELFMAIN_CLASS%"
+    echo Using SelfMain for native image: !MAIN_CLASS!
 
     set "PATCHED_JAR_REL="
     if /i not "!PATCHED_JAR:%BUILD_DIR%\=!"=="!PATCHED_JAR!" (
@@ -229,6 +248,8 @@ if exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
 if exist "%SCRIPT_DIR%\%BINARY_NAME%.exe" (
     del /f /q "%SCRIPT_DIR%\%BINARY_NAME%.exe"
 )
+
+REM SelfMain output dir is created in the branch that compiles it. Do not touch it here.
 
 if exist "%BUILD_DIR%\native-image.args" del /f /q "%BUILD_DIR%\native-image.args"
 
