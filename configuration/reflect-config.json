@@ -1,5 +1,16 @@
 [
   {
+    "name": "org.bukkit.craftbukkit.Main",
+    "methods": [
+      {
+        "name": "main",
+        "parameterTypes": [
+          "java.lang.String[]"
+        ]
+      }
+    ]
+  },
+  {
     "name": "[B"
   },
   {
