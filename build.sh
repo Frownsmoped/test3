@@ -15,7 +15,7 @@ BINARY_NAME="native-minecraft-server"
 NI_EXEC="${GRAALVM_HOME:-}/bin/native-image"
 LIBRARIES_DIR="${META_INF_PATH}/libraries"
 LIBRARIES_LIST="${META_INF_PATH}/libraries.list"
-readonly SERVER_VERSION SCRIPT_DIR AGENT_CONFIG_DIR BUILD_DIR JAR_PATH META_INF_PATH BINARY_NAME NI_EXEC LIBRARIES_DIR LIBRARIES_LIST
+readonly SERVER_VERSION SERVER_MANIFEST_URL SERVER_JAR_DL SCRIPT_DIR AGENT_CONFIG_DIR BUILD_DIR JAR_PATH META_INF_PATH BINARY_NAME NI_EXEC LIBRARIES_DIR LIBRARIES_LIST
 
 if [[ -z "${GRAALVM_HOME:-}" ]]; then
     echo "\$GRAALVM_HOME is not set. Please provide a GraalVM installation. Exiting..."
@@ -54,9 +54,9 @@ if [[ ! -f "${JAR_PATH}" ]]; then
     curl --show-error --fail --location -o "${JAR_PATH}" "${SERVER_JAR_DL}"
 fi
 
-if [[ ! -d "${META_INF_PATH}" || ( ! -f "${META_INF_PATH}/classpath-joined" && ! -f "${LIBRARIES_LIST}" ) ]]; then
-    echo "Extracting server.jar contents before classpath detection..."
-    unzip -oq "${JAR_PATH}" -d "."
+if [[ ! -d "${META_INF_PATH}" ]]; then
+    echo "Extracting resources from Minecraft's server.jar..."
+    (cd "${BUILD_DIR}" && "${GRAALVM_HOME}/bin/jar" xf "${JAR_PATH}" META-INF)
 fi
 
 if [[ ! -f "${META_INF_PATH}/classpath-joined" ]]; then
@@ -114,16 +114,8 @@ pushd "${META_INF_PATH}" > /dev/null
 if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Class: io\.papermc\.paperclip\.Main'; then
     echo "Detected Paperclip server jar."
 
-    # (debug) Decompile for validation
-    if command -v python3 &>/dev/null && [[ -x "${GRAALVM_HOME}/bin/javap" ]]; then
-        python3 "${SCRIPT_DIR}/work/decompile_main.py" --javap "${GRAALVM_HOME}/bin/javap" --jar "${JAR_PATH}" --out "${BUILD_DIR}/decompile_main_serverjar.txt" || true
-    fi
-
-    # Prefer an already-available patched jar from extracted server contents before trying Paperclip bootstrap.
-    PATCHED_JAR="$(ls -1 "${BUILD_DIR}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
-    if [[ -z "${PATCHED_JAR}" ]]; then
-        PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
-    fi
+    # Prefer an already-materialized patched jar to avoid hanging on repeated Paperclip bootstrap runs.
+    PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
     if [[ -n "${PATCHED_JAR}" ]]; then
         echo "Found existing patched jar, skipping Paperclip materialization: ${PATCHED_JAR}"
     else
@@ -131,27 +123,15 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
         echo "Materializing patched jar (timeout: ${MATERIALIZE_TIMEOUT_SECONDS}s)..."
         run_with_optional_timeout "${MATERIALIZE_TIMEOUT_SECONDS}" "${GRAALVM_HOME}/bin/java" -jar "${JAR_PATH}" --version >/dev/null 2>&1 || true
 
-        PATCHED_JAR="$(ls -1 "${BUILD_DIR}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
-        if [[ -z "${PATCHED_JAR}" ]]; then
-            PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
-        fi
+        PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
     fi
 
-    # Paperclip stores the patched jar under versions/* (sometimes also under META-INF/cache/mojang_*.jar).
-    if [[ -z "${PATCHED_JAR}" ]]; then
-        PATCHED_JAR="$(ls -1 "${BUILD_DIR}"/versions/*/*.jar 2>/dev/null | head -n 1 || true)"
-    fi
-    if [[ -z "${PATCHED_JAR}" ]]; then
-        PATCHED_JAR="$(ls -1 "${BUILD_DIR}"/versions/*.jar 2>/dev/null | head -n 1 || true)"
-    fi
+    # Paperclip stores the patched jar under META-INF/versions/* (sometimes also creates mojang_*.jar).
     if [[ -z "${PATCHED_JAR}" ]]; then
         PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/*.jar 2>/dev/null | head -n 1 || true)"
     fi
     if [[ -z "${PATCHED_JAR}" ]]; then
         PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*.jar 2>/dev/null | head -n 1 || true)"
-    fi
-    if [[ -z "${PATCHED_JAR}" ]]; then
-        PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/cache/mojang_*.jar 2>/dev/null | head -n 1 || true)"
     fi
     if [[ -z "${PATCHED_JAR}" ]]; then
         echo "Paperclip did not produce a patched jar under ${META_INF_PATH} (checked mojang_*.jar and versions/). Exiting..."
@@ -167,31 +147,16 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
         rm -rf "${PATCH_WORK}/jar"
         mkdir -p "${PATCH_WORK}/jar"
 
-        # Always start from a clean Main.class from the original spigot jar if available.
-        if [[ -f "${ORIGINAL_SPIGOT_JAR}" ]]; then
-            echo "Extracting clean CraftBukkit Main.class from original spigot jar..."
-            run_with_optional_timeout "${PATCH_TIMEOUT_SECONDS}" unzip -qq "${ORIGINAL_SPIGOT_JAR}" org/bukkit/craftbukkit/Main.class -d "${PATCH_WORK}/jar"
+        cp -f "${SCRIPT_DIR}/work/patch_sleep.py" "${PATCH_WORK}/patch_sleep.py"
+
+        echo "Patching CraftBukkit Main.class inside patched jar to remove outdated-build sleep..."
+        if (cd "${PATCH_WORK}" && run_with_optional_timeout "${PATCH_TIMEOUT_SECONDS}" python3 patch_sleep.py "${PATCHED_JAR}" --in-jar); then
+            echo "Verifying patched jar contains sleep delay constant patched to 0L..."
+            (cd "${PATCH_WORK}" && run_with_optional_timeout "${PATCH_TIMEOUT_SECONDS}" python3 patch_sleep.py "${PATCHED_JAR}" --in-jar --verify-only)
         else
-            echo "Extracting CraftBukkit Main.class from patched jar..."
-            run_with_optional_timeout "${PATCH_TIMEOUT_SECONDS}" unzip -qq "${PATCHED_JAR}" org/bukkit/craftbukkit/Main.class -d "${PATCH_WORK}/jar"
-        fi
-
-        if [[ -f "${PATCH_WORK}/jar/org/bukkit/craftbukkit/Main.class" ]]; then
-            cp -f "${SCRIPT_DIR}/work/patch_sleep.py" "${PATCH_WORK}/patch_sleep.py"
-            echo "Patching CraftBukkit Main.class to remove outdated-build sleep..."
-            if (cd "${PATCH_WORK}" && run_with_optional_timeout "${PATCH_TIMEOUT_SECONDS}" python3 patch_sleep.py jar/org/bukkit/craftbukkit/Main.class); then
-                echo "Updating patched jar with modified Main.class..."
-                (cd "${PATCH_WORK}/jar" && run_with_optional_timeout "${PATCH_TIMEOUT_SECONDS}" zip -q "${PATCHED_JAR}" org/bukkit/craftbukkit/Main.class)
-            else
-                echo "Warning: could not patch Main.class sleep delay, skipping jar update."
-            fi
+            echo "Warning: could not patch patched jar, skipping jar update."
         fi
     fi
-    # (debug) Decompile patched jar for validation
-    if command -v python3 &>/dev/null && [[ -x "${GRAALVM_HOME}/bin/javap" ]]; then
-        python3 "${SCRIPT_DIR}/work/decompile_main.py" --javap "${GRAALVM_HOME}/bin/javap" --jar "${PATCHED_JAR}" --out "${BUILD_DIR}/decompile_main_patchedjar.txt" || true
-    fi
-
     echo "Using patched jar on classpath: ${PATCHED_JAR}"
     CLASSPATH_JOINED="${PATCHED_JAR};${CLASSPATH_JOINED}"
     MAIN_CLASS="org.bukkit.craftbukkit.Main"
@@ -199,11 +164,20 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
     echo "Using direct main class for native image: ${MAIN_CLASS}"
 
     # Ensure runtime can resolve resource:/assets and resource:/data by having patched jar
-    # embedded as a resource in the native image.
+    # embedded as a resource in the native image (only when jar is under BUILD_DIR).
+    PATCHED_JAR_REL=""
     if [[ -n "${PATCHED_JAR}" ]]; then
-        PATCHED_JAR_REL="${PATCHED_JAR#${SCRIPT_DIR}/build/}"
-        export PATCHED_JAR_REL
-        echo "Patched jar relative path (for resources): ${PATCHED_JAR_REL}"
+        build_abs="$(cd "${BUILD_DIR}" && pwd)"
+        patched_abs="$(cd "$(dirname "${PATCHED_JAR}")" && pwd)/$(basename "${PATCHED_JAR}")"
+        case "${patched_abs}" in
+            "${build_abs}"/*)
+                PATCHED_JAR_REL="${patched_abs#${build_abs}/}"
+                echo "Patched jar relative path (for resources): ${PATCHED_JAR_REL}"
+                ;;
+            *)
+                echo "Patched jar is outside BUILD_DIR, skipping IncludeResources embedding: ${PATCHED_JAR}"
+                ;;
+        esac
     fi
 fi
 
@@ -220,7 +194,7 @@ fi
 
 readonly MAIN_CLASS
 
-"${NI_EXEC}" --no-fallback \
+"${NI_EXEC}" -H:+UnlockExperimentalVMOptions --no-fallback \
     -H:ConfigurationFileDirectories="${AGENT_CONFIG_DIR}" \
     -H:IncludeResources="\\Qjoptsimple/HelpFormatterMessages.properties\\E" \
     -H:IncludeResources="\\Qjoptsimple/ExceptionMessages.properties\\E" \
