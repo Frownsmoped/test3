@@ -98,6 +98,11 @@ if [[ -z "${MAIN_CLASS:-}" && -f "${META_INF_PATH}/main-class" ]]; then
     MAIN_CLASS=$(cat "${META_INF_PATH}/main-class")
 fi
 
+SELFMAIN_BUILD_DIR="${BUILD_DIR}/selfmain"
+SELFMAIN_CLASS="SelfMain"
+rm -rf "${SELFMAIN_BUILD_DIR}"
+mkdir -p "${SELFMAIN_BUILD_DIR}"
+
 if [[ -z "${MAIN_CLASS:-}" ]]; then
     echo "Unable to determine main class. Exiting..."
     exit 1
@@ -153,10 +158,14 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
         fi
     fi
     echo "Using patched jar on classpath: ${PATCHED_JAR}"
-    CLASSPATH_JOINED="${PATCHED_JAR};${CLASSPATH_JOINED}"
-    MAIN_CLASS="org.bukkit.craftbukkit.Main"
+
+    echo "Compiling SelfMain.java..."
+    "${GRAALVM_HOME}/bin/javac" -cp "${PATCHED_JAR}:${CLASSPATH_JOINED//;/:}" -d "${SELFMAIN_BUILD_DIR}" "${SCRIPT_DIR}/work/SelfMain.java"
+
+    CLASSPATH_JOINED="${SELFMAIN_BUILD_DIR};${PATCHED_JAR};${CLASSPATH_JOINED}"
+    MAIN_CLASS="${SELFMAIN_CLASS}"
     export CLASSPATH_JOINED
-    echo "Using direct main class for native image: ${MAIN_CLASS}"
+    echo "Using SelfMain for native image: ${MAIN_CLASS}"
 
     # Ensure runtime can resolve resource:/assets and resource:/data by having patched jar
     # embedded as a resource in the native image (only when jar is under BUILD_DIR).
