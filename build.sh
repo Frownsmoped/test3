@@ -98,6 +98,11 @@ if [[ -z "${MAIN_CLASS:-}" && -f "${META_INF_PATH}/main-class" ]]; then
     MAIN_CLASS=$(cat "${META_INF_PATH}/main-class")
 fi
 
+SELFMAIN_BUILD_DIR="${BUILD_DIR}/selfmain"
+SELFMAIN_CLASS="SelfMain"
+rm -rf "${SELFMAIN_BUILD_DIR}"
+mkdir -p "${SELFMAIN_BUILD_DIR}"
+
 if [[ -z "${MAIN_CLASS:-}" ]]; then
     echo "Unable to determine main class. Exiting..."
     exit 1
@@ -114,7 +119,7 @@ pushd "${META_INF_PATH}" > /dev/null
 if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Class: io\.papermc\.paperclip\.Main'; then
     echo "Detected Paperclip server jar."
 
-    # Prefer an already-materialized patched jar to avoid hanging on repeated Paperclip bootstrap runs.
+    # Prefer an already-materialized patched jar.
     PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
     if [[ -n "${PATCHED_JAR}" ]]; then
         echo "Found existing patched jar, skipping Paperclip materialization: ${PATCHED_JAR}"
@@ -126,6 +131,12 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
         PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/spigot-*.jar 2>/dev/null | head -n 1 || true)"
     fi
 
+    # If Paperclip didn't create it under META-INF, fall back to build/versions (common in CI caches).
+    if [[ -z "${PATCHED_JAR}" && -f "${BUILD_DIR}/versions/${SERVER_VERSION}/spigot-${SERVER_VERSION}.jar" ]]; then
+        PATCHED_JAR="${BUILD_DIR}/versions/${SERVER_VERSION}/spigot-${SERVER_VERSION}.jar"
+        echo "Using patched jar from build/versions fallback: ${PATCHED_JAR}"
+    fi
+
     # Paperclip stores the patched jar under META-INF/versions/* (sometimes also creates mojang_*.jar).
     if [[ -z "${PATCHED_JAR}" ]]; then
         PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*/*.jar 2>/dev/null | head -n 1 || true)"
@@ -134,7 +145,7 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
         PATCHED_JAR="$(ls -1 "${META_INF_PATH}"/versions/*.jar 2>/dev/null | head -n 1 || true)"
     fi
     if [[ -z "${PATCHED_JAR}" ]]; then
-        echo "Paperclip did not produce a patched jar under ${META_INF_PATH} (checked mojang_*.jar and versions/). Exiting..."
+        echo "Paperclip did not produce a patched jar under ${META_INF_PATH} and no build/versions fallback was found. Exiting..."
         exit 1
     fi
 
@@ -158,10 +169,14 @@ if unzip -p "${JAR_PATH}" META-INF/MANIFEST.MF 2>/dev/null | grep -qE '^Main-Cla
         fi
     fi
     echo "Using patched jar on classpath: ${PATCHED_JAR}"
-    CLASSPATH_JOINED="${PATCHED_JAR};${CLASSPATH_JOINED}"
-    MAIN_CLASS="org.bukkit.craftbukkit.Main"
+
+    echo "Compiling SelfMain.java..."
+    "${GRAALVM_HOME}/bin/javac" -cp "${PATCHED_JAR}:${CLASSPATH_JOINED//;/:}" -d "${SELFMAIN_BUILD_DIR}" "${SCRIPT_DIR}/work/SelfMain.java"
+
+    CLASSPATH_JOINED="${SELFMAIN_BUILD_DIR};${PATCHED_JAR};${CLASSPATH_JOINED}"
+    MAIN_CLASS="${SELFMAIN_CLASS}"
     export CLASSPATH_JOINED
-    echo "Using direct main class for native image: ${MAIN_CLASS}"
+    echo "Using SelfMain for native image: ${MAIN_CLASS}"
 
     # Ensure runtime can resolve resource:/assets and resource:/data by having patched jar
     # embedded as a resource in the native image (only when jar is under BUILD_DIR).
@@ -192,7 +207,7 @@ if [[ -n "${PATCHED_JAR_REL:-}" ]]; then
     EXTRA_NI_ARGS+=( "-H:IncludeResources=\\Q${PATCHED_JAR_REL}\\E" )
 fi
 
-readonly MAIN_CLASS
+readonly MAIN_CLASS SELFMAIN_BUILD_DIR SELFMAIN_CLASS
 
 "${NI_EXEC}" -H:+UnlockExperimentalVMOptions --no-fallback \
     -H:ConfigurationFileDirectories="${AGENT_CONFIG_DIR}" \
