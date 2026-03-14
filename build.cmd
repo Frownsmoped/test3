@@ -1,10 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-rem Build a native-image with a self-controlled entrypoint (SelfMain)
-rem - Ensures eula.txt contains eula=true at runtime
-rem - Delegates to org.bukkit.craftbukkit.Main
-
 set "SERVER_VERSION=%SERVER_VERSION%"
 if not defined SERVER_VERSION set "SERVER_VERSION=1.21.11"
 
@@ -12,19 +8,12 @@ set "SCRIPT_DIR=%~dp0"
 if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "AGENT_CONFIG_DIR=%SCRIPT_DIR%\configuration"
 set "BUILD_DIR=%SCRIPT_DIR%\build"
-set "WORK_DIR=%SCRIPT_DIR%\work"
 set "JAR_PATH=%BUILD_DIR%\server.jar"
-set "ZIP_PATH=%BUILD_DIR%\server.zip"
 set "META_INF_PATH=%BUILD_DIR%\META-INF"
 set "BINARY_NAME=native-minecraft-server"
 set "ORIGINAL_SPIGOT_JAR=%SCRIPT_DIR%\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar"
 set "LIBRARIES_DIR=%META_INF_PATH%\libraries"
 set "LIBRARIES_LIST=%META_INF_PATH%\libraries.list"
-
-set "SELF_MAIN_SRC=%WORK_DIR%\SelfMain.java"
-set "SELF_CLASSES_DIR=%BUILD_DIR%\self-classes"
-set "SELF_JAR=%BUILD_DIR%\self-main.jar"
-set "SELF_MAIN_CLASS=SelfMain"
 
 if not defined GRAALVM_HOME (
     echo $GRAALVM_HOME is not set. Please provide a GraalVM installation. Exiting...
@@ -38,11 +27,6 @@ echo Using native-image: %NI_EXEC%
 
 if not exist "%NI_EXEC%" (
     echo native-image.cmd was not found under %GRAALVM_HOME%\bin. Exiting...
-    exit /b 1
-)
-
-if not exist "%SELF_MAIN_SRC%" (
-    echo Missing %SELF_MAIN_SRC%. Exiting...
     exit /b 1
 )
 
@@ -70,10 +54,10 @@ if not exist "%JAR_PATH%" (
 )
 
 if not exist "%META_INF_PATH%" (
-    if exist "%ZIP_PATH%" del /f /q "%ZIP_PATH%"
-    copy /y "%JAR_PATH%" "%ZIP_PATH%" >nul || exit /b 1
-    echo Extracting resources from Minecraft's server.jar...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -Path '%ZIP_PATH%' -DestinationPath '%BUILD_DIR%' -Force" || exit /b 1
+    echo Extracting resources from Minecraft's server.jar with jar.exe...
+    pushd "%BUILD_DIR%" || exit /b 1
+    "%GRAALVM_HOME%\bin\jar.exe" xf "%JAR_PATH%" META-INF || exit /b 1
+    popd || exit /b 1
 )
 
 set "CLASSPATH_JOINED="
@@ -123,8 +107,54 @@ pushd "%META_INF_PATH%" || exit /b 1
 set "PATCHED_JAR="
 set "PATCHED_JAR_REL="
 
+REM Non-Paperclip scenario: patch the exact spigot jar that native-image will use.
+REM Prefer build\META-INF\versions\...\spigot-*.jar because current Windows native-image.args
+REM shows that jar is on the classpath. Fall back to build\versions\...\spigot-*.jar.
+if /i not "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
+    set "TARGET_SPIGOT_JAR=%META_INF_PATH%\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar"
+    if not exist "!TARGET_SPIGOT_JAR!" set "TARGET_SPIGOT_JAR=%BUILD_DIR%\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar"
+
+    if exist "!TARGET_SPIGOT_JAR!" (
+        echo Detected direct spigot jar used for build: !TARGET_SPIGOT_JAR!
+
+        if exist "%BUILD_DIR%\patch" rmdir /s /q "%BUILD_DIR%\patch"
+        mkdir "%BUILD_DIR%\patch\jar" >nul 2>&1
+        copy /y "%SCRIPT_DIR%\work\patch_sleep.py" "%BUILD_DIR%\patch\patch_sleep.py" >nul
+
+        echo Extracting CraftBukkit Main.class from target spigot jar...
+        pushd "%BUILD_DIR%\patch\jar" || exit /b 1
+        "%GRAALVM_HOME%\bin\jar.exe" xf "!TARGET_SPIGOT_JAR!" org/bukkit/craftbukkit/Main.class || exit /b 1
+        popd || exit /b 1
+
+        echo Patching CraftBukkit Main.class to remove outdated-build sleep...
+        python "%BUILD_DIR%\patch\patch_sleep.py" "%BUILD_DIR%\patch\jar\org\bukkit\craftbukkit\Main.class" || exit /b 1
+        echo Verifying patched Main.class sleep delay constant is neutralized...
+        python "%BUILD_DIR%\patch\patch_sleep.py" "%BUILD_DIR%\patch\jar\org\bukkit\craftbukkit\Main.class" --verify-only || exit /b 1
+
+        echo Updating target spigot jar with modified Main.class...
+        pushd "%BUILD_DIR%\patch\jar" || exit /b 1
+        "%GRAALVM_HOME%\bin\jar.exe" uf "!TARGET_SPIGOT_JAR!" org/bukkit/craftbukkit/Main.class || exit /b 1
+        popd || exit /b 1
+
+        echo Verifying updated target spigot jar really contains patched Main.class...
+        python "%BUILD_DIR%\patch\patch_sleep.py" "!TARGET_SPIGOT_JAR!" --in-jar --verify-only || exit /b 1
+
+        REM Force classpath/main-class to use this exact jar's CraftBukkit Main directly.
+        set "CLASSPATH_JOINED=!TARGET_SPIGOT_JAR!;!CLASSPATH_JOINED!"
+        set "MAIN_CLASS=org.bukkit.craftbukkit.Main"
+        echo Using direct main class for native image: !MAIN_CLASS!
+    )
+)
+
 if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
     echo Detected Paperclip server jar.
+
+    if exist "%GRAALVM_HOME%\bin\javap.exe" (
+        python "%SCRIPT_DIR%\work\decompile_main.py" --javap "%GRAALVM_HOME%\bin\javap.exe" --jar "%JAR_PATH%" --out "%BUILD_DIR%\decompile_main_serverjar.txt" >nul 2>&1
+    )
+
+    set "BUILD_VERSIONS_SPIGOT_JAR=%BUILD_DIR%\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar"
+    if exist "!BUILD_VERSIONS_SPIGOT_JAR!" set "PATCHED_JAR=!BUILD_VERSIONS_SPIGOT_JAR!"
 
     for /r "%META_INF_PATH%\versions" %%I in (spigot-*.jar) do if not defined PATCHED_JAR set "PATCHED_JAR=%%~fI"
 
@@ -152,59 +182,36 @@ if /i "%JAR_MAIN_CLASS%"=="io.papermc.paperclip.Main" (
         exit /b 1
     )
 
-    if exist "%ORIGINAL_SPIGOT_JAR%" (
-        if exist "%BUILD_DIR%\patch" rmdir /s /q "%BUILD_DIR%\patch"
-        mkdir "%BUILD_DIR%\patch\jar" >nul 2>&1
+    if exist "%BUILD_DIR%\patch" rmdir /s /q "%BUILD_DIR%\patch"
+    mkdir "%BUILD_DIR%\patch\jar" >nul 2>&1
 
-        echo Extracting clean CraftBukkit Main.class from original spigot jar...
-        pushd "%BUILD_DIR%\patch\jar" || exit /b 1
-        "%GRAALVM_HOME%\bin\jar.exe" xf "%ORIGINAL_SPIGOT_JAR%" org/bukkit/craftbukkit/Main.class || exit /b 1
-        popd || exit /b 1
+    copy /y "%SCRIPT_DIR%\work\patch_sleep.py" "%BUILD_DIR%\patch\patch_sleep.py" >nul
 
-        copy /y "%SCRIPT_DIR%\work\patch_sleep.py" "%BUILD_DIR%\patch\patch_sleep.py" >nul
-        echo Patching CraftBukkit Main.class to remove outdated-build sleep...
-        python "%BUILD_DIR%\patch\patch_sleep.py" "%BUILD_DIR%\patch\jar\org\bukkit\craftbukkit\Main.class" || exit /b 1
+    echo Patching CraftBukkit Main.class inside patched jar to remove outdated-build sleep...
+    python "%BUILD_DIR%\patch\patch_sleep.py" "!PATCHED_JAR!" --in-jar || exit /b 1
+    echo Verifying patched jar contains sleep delay constant patched to 0L...
+    python "%BUILD_DIR%\patch\patch_sleep.py" "!PATCHED_JAR!" --in-jar --verify-only || exit /b 1
 
-        echo Updating patched jar with modified Main.class...
-        pushd "%BUILD_DIR%\patch\jar" || exit /b 1
-        "%GRAALVM_HOME%\bin\jar.exe" uf "!PATCHED_JAR!" org/bukkit/craftbukkit/Main.class || exit /b 1
-        popd || exit /b 1
+    if exist "%GRAALVM_HOME%\bin\javap.exe" (
+        python "%SCRIPT_DIR%\work\decompile_main.py" --javap "%GRAALVM_HOME%\bin\javap.exe" --jar "!PATCHED_JAR!" --out "%BUILD_DIR%\decompile_main_patchedjar.txt" >nul 2>&1
     )
 
     echo Using patched jar on classpath: !PATCHED_JAR!
     set "CLASSPATH_JOINED=!PATCHED_JAR!;!CLASSPATH_JOINED!"
     set "MAIN_CLASS=org.bukkit.craftbukkit.Main"
-    echo Using direct main class for server: !MAIN_CLASS!
+    echo Using direct main class for native image: !MAIN_CLASS!
 
-    set "PATCHED_JAR_REL=META-INF/versions/%SERVER_VERSION%/spigot-%SERVER_VERSION%.jar"
-    if not exist "%BUILD_DIR%\META-INF\versions\%SERVER_VERSION%\spigot-%SERVER_VERSION%.jar" (
-        for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$buildDir = [System.IO.Path]::GetFullPath('%BUILD_DIR%'); $patchedJar = [System.IO.Path]::GetFullPath('!PATCHED_JAR!'); [System.IO.Path]::GetRelativePath($buildDir, $patchedJar).Replace('\','/').Trim()"`) do set "PATCHED_JAR_REL=%%I"
+    set "PATCHED_JAR_REL="
+    if /i not "!PATCHED_JAR:%BUILD_DIR%\=!"=="!PATCHED_JAR!" (
+        set "PATCHED_JAR_REL=!PATCHED_JAR:%BUILD_DIR%\=!"
+        set "PATCHED_JAR_REL=!PATCHED_JAR_REL:\=/!"
     )
     if defined PATCHED_JAR_REL (
         echo Patched jar relative path ^(for resources^): !PATCHED_JAR_REL!
     ) else (
-        echo Failed to compute patched jar relative path. Exiting...
-        exit /b 1
+        echo Patched jar is outside BUILD_DIR, skipping IncludeResources embedding: !PATCHED_JAR!
     )
 )
-
-rem --------------------------------------------------------------------------
-rem Build SelfMain into a tiny jar and prepend it to the classpath
-rem --------------------------------------------------------------------------
-echo Building %SELF_MAIN_CLASS%...
-if exist "%SELF_CLASSES_DIR%" rmdir /s /q "%SELF_CLASSES_DIR%"
-mkdir "%SELF_CLASSES_DIR%" || exit /b 1
-
-rem Compile with server classpath available (so org.bukkit.craftbukkit.Main resolves)
-"%GRAALVM_HOME%\bin\javac.exe" -encoding UTF-8 -cp "%CLASSPATH_JOINED%" -d "%SELF_CLASSES_DIR%" "%SELF_MAIN_SRC%"
-if errorlevel 1 exit /b %errorlevel%
-
-if exist "%SELF_JAR%" del /f /q "%SELF_JAR%"
-"%GRAALVM_HOME%\bin\jar.exe" --create --file "%SELF_JAR%" -C "%SELF_CLASSES_DIR%" .
-if errorlevel 1 exit /b %errorlevel%
-
-set "CLASSPATH_JOINED=%SELF_JAR%;%CLASSPATH_JOINED%"
-echo Self jar added to classpath: %SELF_JAR%
 
 set "JNA_TMPDIR=%META_INF_PATH%\.jna"
 if not exist "%JNA_TMPDIR%" mkdir "%JNA_TMPDIR%"
@@ -223,38 +230,38 @@ if exist "%SCRIPT_DIR%\%BINARY_NAME%.exe" (
     del /f /q "%SCRIPT_DIR%\%BINARY_NAME%.exe"
 )
 
-set "NI_ARG_FILE=%BUILD_DIR%\native-image-self.args"
-if exist "%NI_ARG_FILE%" del /f /q "%NI_ARG_FILE%"
+if exist "%BUILD_DIR%\native-image.args" del /f /q "%BUILD_DIR%\native-image.args"
 
-(
-    echo --no-fallback
-    echo -H:ConfigurationFileDirectories=%AGENT_CONFIG_DIR_ARG%
-    echo -H:IncludeResources=\\Qjoptsimple/HelpFormatterMessages.properties\\E
-    echo -H:IncludeResources=\\Qjoptsimple/ExceptionMessages.properties\\E
-    echo -H:+AddAllCharsets
-    echo -H:+ReportExceptionStackTraces
-    echo --enable-url-protocols=https
-    echo --initialize-at-run-time=io.netty
-    echo --enable-monitoring=heapdump,jfr
-    echo --enable-native-access=ALL-UNNAMED
-    echo -H:+SharedArenaSupport
-    echo --initialize-at-build-time=net.minecraft.util.profiling.jfr.event
-    echo -Dnet.minecraft.util.profiling.jfr.JvmProfiler.ENABLED=false
-    echo -Dnet.minecraft.util.profiling.jfr.jfrProfiler=false
-    echo -Djdk.jfr.enabled=false
-    echo --initialize-at-run-time=net.minecraft.util.profiling.jfr
-    echo --initialize-at-run-time=org.apache.logging.log4j
-    echo --initialize-at-run-time=joptsimple
-    echo --initialize-at-run-time=org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry
-    echo -H:Name=%BINARY_NAME%
-    echo -cp
-    echo %CLASSPATH_JOINED_ARG%
-    if defined PATCHED_JAR_REL echo -H:IncludeResources=\\Q%PATCHED_JAR_REL%\\E
-) > "%NI_ARG_FILE%"
+set "EXTRA_NI_RESOURCE_ARG="
+if defined PATCHED_JAR_REL set "EXTRA_NI_RESOURCE_ARG=-H:IncludeResources=\\Q!PATCHED_JAR_REL!\\E"
 
-echo Launching native-image build ^(SelfMain entrypoint^)...
-echo Native-image args file: %NI_ARG_FILE%
-call "%NI_EXEC%" @"%NI_ARG_FILE%" %* "%SELF_MAIN_CLASS%"
+echo Launching native-image build...
+call "%NI_EXEC%" ^
+    -H:+UnlockExperimentalVMOptions ^
+    --no-fallback ^
+    -H:ConfigurationFileDirectories=%AGENT_CONFIG_DIR_ARG% ^
+    -H:IncludeResources=\\Qjoptsimple/HelpFormatterMessages.properties\\E ^
+    -H:IncludeResources=\\Qjoptsimple/ExceptionMessages.properties\\E ^
+    -H:+AddAllCharsets ^
+    -H:+ReportExceptionStackTraces ^
+    --enable-url-protocols=https ^
+    --initialize-at-run-time=io.netty ^
+    --enable-monitoring=heapdump,jfr ^
+    --enable-native-access=ALL-UNNAMED ^
+    -H:+SharedArenaSupport ^
+    --initialize-at-build-time=net.minecraft.util.profiling.jfr.event ^
+    -Dnet.minecraft.util.profiling.jfr.JvmProfiler.ENABLED=false ^
+    -Dnet.minecraft.util.profiling.jfr.jfrProfiler=false ^
+    -Djdk.jfr.enabled=false ^
+    --initialize-at-run-time=net.minecraft.util.profiling.jfr ^
+    --initialize-at-run-time=org.apache.logging.log4j ^
+    --initialize-at-run-time=joptsimple ^
+    --initialize-at-run-time=org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry ^
+    -H:Name=%BINARY_NAME% ^
+    -cp "%CLASSPATH_JOINED_ARG%" ^
+    %EXTRA_NI_RESOURCE_ARG% ^
+    %* ^
+    "%MAIN_CLASS%"
 if errorlevel 1 exit /b %errorlevel%
 
 if not exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
@@ -262,15 +269,15 @@ if not exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
     exit /b 1
 )
 
-if exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
-    copy /y "%META_INF_PATH%\%BINARY_NAME%.exe" "%SCRIPT_DIR%\%BINARY_NAME%.exe" >nul
-)
+@REM if exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
+@REM     copy /y "%META_INF_PATH%\%BINARY_NAME%.exe" "%SCRIPT_DIR%\%BINARY_NAME%.exe" >nul
+@REM )
 
 popd
 popd
 
 echo.
-echo Done! The self-entry native Minecraft server is located at:
+echo Done! The native Minecraft server is located at:
 if exist "%META_INF_PATH%\%BINARY_NAME%.exe" (
     echo %META_INF_PATH%\%BINARY_NAME%.exe
 ) else (
