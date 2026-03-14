@@ -19,12 +19,14 @@ public final class SelfMain {
 
     public static void main(String[] args) {
         try {
-
+            // Match Minecraft server behavior: EULA is checked in current working directory.
+            // Avoid repeated disk writes: only create it if missing.
             Path eula = Path.of("eula.txt");
             if (!Files.exists(eula)) {
                 Files.writeString(eula, "eula=true\n", StandardCharsets.UTF_8);
             }
         } catch (IOException e) {
+            // Don't fail hard; still try to start the server. Print for debugging.
             e.printStackTrace();
         }
 
@@ -44,6 +46,9 @@ public final class SelfMain {
                 }
             }
         }
+
+        // Delegate to the real server main.
+        // Force --nogui and inject --port while preserving user args.
         String[] forwarded;
         if (args == null || args.length == 0) {
             forwarded = new String[] { "--nogui", "--port", String.valueOf(port) };
@@ -55,7 +60,15 @@ public final class SelfMain {
             System.arraycopy(args, 0, forwarded, 3, args.length);
         }
 
-        // For Spigot/Paper materialized jar we use org.bukkit.craftbukkit.Main.
-        org.bukkit.craftbukkit.Main.main(forwarded);
+        // Call server main via reflection; class name can be overridden by env var.
+        // Default: org.bukkit.craftbukkit.Main
+        String entryClass = System.getenv().getOrDefault("MC_ENTRY_CLASS", "org.bukkit.craftbukkit.Main");
+        try {
+            Class<?> mainClz = Class.forName(entryClass);
+            java.lang.reflect.Method m = mainClz.getMethod("main", String[].class);
+            m.invoke(null, (Object) forwarded);
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
     }
 }
