@@ -267,7 +267,28 @@ def determine_main_class(jar_main_class: str) -> str:
     return ""
 
 
+def _jar_has_class(jar_path: Path, class_name: str) -> bool:
+    """
+    Lightweight check: does jar contain the given class entry?
+    Used to decide whether the resolved main-class is actually runnable from the selected jar.
+    """
+    entry = class_name.replace(".", "/") + ".class"
+    try:
+        with zipfile.ZipFile(jar_path, "r") as zf:
+            try:
+                zf.getinfo(entry)
+                return True
+            except KeyError:
+                return False
+    except Exception:
+        return False
+
+
 def find_target_server_jar() -> Path | None:
+    # Support both new and legacy layouts:
+    # - build/META-INF/versions/*.jar
+    # - build/bundler/versions/*.jar
+    # - build/versions/** (legacy layout mentioned as build\\version(s))
     search_roots = [
         META_INF_PATH / "versions",
         BUILD_DIR / "bundler" / "versions",
@@ -287,6 +308,19 @@ def find_target_server_jar() -> Path | None:
             for candidate in sorted(root.glob(pattern)):
                 if candidate.exists():
                     return candidate.resolve()
+
+    # Legacy nested versions: build/versions/<version>/*.jar
+    legacy_root = BUILD_DIR / "versions"
+    if legacy_root.exists():
+        for candidate in sorted(legacy_root.rglob("craftbukkit-*.jar")):
+            if candidate.exists():
+                return candidate.resolve()
+        for candidate in sorted(legacy_root.rglob("spigot-*.jar")):
+            if candidate.exists():
+                return candidate.resolve()
+        for candidate in sorted(legacy_root.rglob("*.jar")):
+            if candidate.exists():
+                return candidate.resolve()
 
     return None
 
@@ -519,9 +553,26 @@ def main(argv: list[str]) -> int:
         if target_server_jar_s not in classpath_joined.split(os.pathsep):
             classpath_joined = target_server_jar_s + (os.pathsep + classpath_joined if classpath_joined else "")
 
+    # Determine runtime entry class WITHOUT requiring user-set env vars.
+    # If MC_ENTRY_CLASS is set, treat it as an override (useful for debugging),
+    # but otherwise decide from resolved_main_class with validation against the available jars.
     runtime_entry_class = os.environ.get("MC_ENTRY_CLASS", "").strip()
     if not runtime_entry_class:
-        runtime_entry_class = resolved_main_class or ("org.bukkit.craftbukkit.Main" if target_server_jar else jar_main_class)
+        runtime_entry_class = resolved_main_class or ""
+
+        # Validate that the resolved main-class exists where we expect it to.
+        # Some server jars report Main-Class=org.bukkit.craftbukkit.Main but the actual runnable entry
+        # is bundled elsewhere (e.g. org.bukkit.craftbukkit.bootstrap.Main).
+        if runtime_entry_class and target_server_jar is not None and not _jar_has_class(target_server_jar, runtime_entry_class):
+            print(
+                f"[WARN] Resolved main-class '{runtime_entry_class}' not found in target server jar; "
+                f"falling back to jar manifest Main-Class."
+            )
+            runtime_entry_class = jar_main_class or runtime_entry_class
+
+        # If still empty, last resort:
+        if not runtime_entry_class:
+            runtime_entry_class = "org.bukkit.craftbukkit.Main" if target_server_jar else (jar_main_class or "")
 
     print(f"[INFO] Using MC_ENTRY_CLASS for runtime helper files: {runtime_entry_class or '<none>'}")
 
