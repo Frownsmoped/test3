@@ -24,17 +24,16 @@ jobs:
             arch: arm64
           - os: windows-latest
             arch: x64
-          - os: macos-latest
-            arch: amd64
-          - os: macos-latest
-            arch: arm64
+          #- os: macos-latest
+           # arch: amd64
+          #- os: macos-latest
+           # arch: arm64
     runs-on: ${{ matrix.os }}
     env:
       TARGET_OS: ${{ matrix.os }}
       TARGET_ARCH: ${{ matrix.arch }}
       SERVER_JAR_URL: "https://r2.kmoljklj.top/server/server.jar"
       SERVER_JAR_PATH: "build/server.jar"
-      MC_ENTRY_CLASS: "org.bukkit.craftbukkit.Main"
 
     steps:
       - name: Checkout repository
@@ -102,29 +101,11 @@ jobs:
           java -jar server.jar || true
           echo "Continue workflow after initial server run."
 
-      - name: Build native Minecraft server (Windows)
-        if: ${{ matrix.os == 'windows-latest' }}
-        shell: cmd
-        run: |
-          @echo off
-          echo Building for OS=%TARGET_OS% and ARCH=%TARGET_ARCH%
-          build.cmd
-
-      - name: Build native Minecraft server (Linux)
-        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+      - name: Build native Minecraft server (All OS via build.py)
         shell: bash
         run: |
           echo "Building for OS=${TARGET_OS} and ARCH=${TARGET_ARCH}"
-          chmod 775 ./build.sh
-          ./build.sh
-
-      - name: Build native Minecraft server (macOS)
-        if: ${{ startsWith(matrix.os, 'macos-') }}
-        shell: bash
-        run: |
-          echo "Building for OS=${TARGET_OS} and ARCH=${TARGET_ARCH}"
-          chmod 775 ./build-macos.sh
-          ./build-macos.sh
+          python build.py
 
       - name: Upload Build Artifact (Windows)
         if: ${{ matrix.os == 'windows-latest' }}

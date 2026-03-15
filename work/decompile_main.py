@@ -2,19 +2,78 @@
 import argparse
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 
-def run(cmd, cwd=None):
-    print("+", " ".join(cmd))
-    subprocess.check_call(cmd, cwd=cwd)
+def find_runtime_jars_from_server_jar(server_jar: Path) -> list[Path]:
+    """
+    Resolve the real CraftBukkit/Spigot jar(s) when the input is the outer server.jar.
+
+    Search order:
+    1) build/META-INF/versions/*.jar
+    2) build/bundler/versions/*.jar
+    3) build/META-INF/versions/*/spigot-*.jar   (legacy layout)
+    4) build/META-INF/cache/mojang_*.jar        (legacy fallback)
+    """
+    base = server_jar.parent
+    meta_inf = base / "META-INF"
+    candidates: list[Path] = []
+
+    preferred_patterns = [
+        meta_inf / "versions",
+        base / "bundler" / "versions",
+    ]
+    for root in preferred_patterns:
+        if root.exists():
+            for pattern in ("craftbukkit-*.jar", "spigot-*.jar", "*.jar"):
+                for p in sorted(root.glob(pattern)):
+                    if p.exists() and p not in candidates:
+                        candidates.append(p)
+
+    legacy_versions = meta_inf / "versions"
+    if legacy_versions.exists():
+        for p in sorted(legacy_versions.glob("*/spigot-*.jar")):
+            if p.exists() and p not in candidates:
+                candidates.append(p)
+
+    legacy_cache = meta_inf / "cache"
+    if legacy_cache.exists():
+        for p in sorted(legacy_cache.glob("mojang_*.jar")):
+            if p.exists() and p not in candidates:
+                candidates.append(p)
+
+    return candidates
+
+
+def build_classpath(jar: Path) -> str:
+    cp_entries: list[Path] = []
+
+    if jar.name == "server.jar":
+        candidates = find_runtime_jars_from_server_jar(jar)
+        cp_entries.extend(candidates)
+
+    cp_entries.append(jar)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for p in cp_entries:
+        try:
+            rp = p.resolve()
+        except OSError:
+            rp = p
+        key = os.path.normcase(str(rp))
+        if key in seen or not rp.exists():
+            continue
+        seen.add(key)
+        deduped.append(rp)
+
+    return os.pathsep.join(str(p) for p in deduped)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Decompile/inspect CraftBukkit Main for patch validation.")
     ap.add_argument("--javap", required=True, help="Path to javap executable")
-    ap.add_argument("--jar", required=True, help="Path to spigot/patched jar")
+    ap.add_argument("--jar", required=True, help="Path to server/craftbukkit/spigot jar")
     ap.add_argument("--out", required=True, help="Output text file")
     args = ap.parse_args()
 
@@ -29,27 +88,12 @@ def main():
 
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Use javap disassembly for both Main and Main$1 (option parser inner class)
     targets = ["org.bukkit.craftbukkit.Main", "org.bukkit.craftbukkit.Main$1"]
+    cp = build_classpath(jar)
+
     lines = []
-
-    # Resolve a classpath that actually contains CraftBukkit:
-    # - If --jar points to server.jar, look for extracted jars under <build>/META-INF/versions/*/spigot-*.jar
-    #   and <build>/META-INF/cache/mojang_*.jar (preferred).
-    cp_entries = [jar]
-    if jar.name == "server.jar":
-        base = jar.parent
-        meta_inf = base / "META-INF"
-        candidates = []
-        if (meta_inf / "versions").exists():
-            candidates += sorted((meta_inf / "versions").glob("*/spigot-*.jar"))
-        if (meta_inf / "cache").exists():
-            candidates += sorted((meta_inf / "cache").glob("mojang_*.jar"))
-        # Prefer candidates first on classpath
-        for p in reversed(candidates):
-            cp_entries.insert(0, p)
-
-    cp = os.pathsep.join(str(p) for p in cp_entries)
+    lines.append(f"# input-jar: {jar}\n")
+    lines.append(f"# classpath: {cp}\n\n")
 
     for t in targets:
         cmd = [str(javap), "-classpath", cp, "-c", t]

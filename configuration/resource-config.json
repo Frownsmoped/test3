@@ -1,4 +1,79 @@
 {
+  "bundles": [
+    {
+      "name": "com.sun.java.swing.plaf.windows.resources.windows",
+      "classNames": [
+        "com.sun.java.swing.plaf.windows.resources.windows",
+        "com.sun.java.swing.plaf.windows.resources.windows_zh_CN"
+      ]
+    },
+    {
+      "name": "com.sun.swing.internal.plaf.basic.resources.basic",
+      "classNames": [
+        "com.sun.swing.internal.plaf.basic.resources.basic",
+        "com.sun.swing.internal.plaf.basic.resources.basic_zh_CN"
+      ]
+    },
+    {
+      "name": "sun.awt.resources.awt",
+      "classNames": [
+        "sun.awt.resources.awt",
+        "sun.awt.resources.awt_zh_CN"
+      ]
+    },
+    {
+      "name": "com.sun.java.swing.plaf.windows.resources.windows",
+      "locales": [
+        "zh-CN"
+      ]
+    },
+    {
+      "name": "com.sun.swing.internal.plaf.basic.resources.basic",
+      "locales": [
+        "zh-CN"
+      ]
+    },
+    {
+      "name": "jline.console.completer.CandidateListCompletionHandler",
+      "locales": [
+        "zh-CN"
+      ]
+    },
+    {
+      "name": "sun.awt.resources.awt",
+      "locales": [
+        "zh-CN"
+      ]
+    },
+    {
+      "name": "sun.text.resources.cldr.FormatData",
+      "locales": [
+        "en",
+        "en-US",
+        "und",
+        "zh",
+        "zh-CN",
+        "zh-HK",
+        "zh-Hans",
+        "zh-Hans-CN",
+        "zh-Hans-HK"
+      ]
+    },
+    {
+      "name": "sun.util.resources.cldr.CalendarData",
+      "locales": [
+        "und"
+      ]
+    },
+    {
+      "name": "sun.util.resources.cldr.TimeZoneNames",
+      "locales": [
+        "en",
+        "en-US",
+        "und"
+      ]
+    }
+  ],
   "resources": {
     "includes": [
       {
@@ -690,30 +765,112 @@
       },
       {
         "pattern": "java.base:\\Qjava/lang/Character.class\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/maven/org.bukkit/bukkit/pom.properties\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/native/windows64/jansi.dll\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/java.util.spi.ResourceBundleControlProvider\\E"
+      },
+      {
+        "pattern": "\\Qjline/console/completer/CandidateListCompletionHandler.properties\\E"
+      },
+      {
+        "pattern": "\\Qjline/console/completer/CandidateListCompletionHandler_zh.properties\\E"
+      },
+      {
+        "pattern": "\\Qjline/console/completer/CandidateListCompletionHandler_zh_CN.properties\\E"
+      },
+      {
+        "pattern": "\\Qjline/console/completer/CandidateListCompletionHandler_zh_Hans.properties\\E"
+      },
+      {
+        "pattern": "\\Qjline/console/completer/CandidateListCompletionHandler_zh_Hans_CN.properties\\E"
+      },
+      {
+        "pattern": "\\Qlog4j2-test15615099.jsn\\E"
+      },
+      {
+        "pattern": "\\Qlog4j2-test15615099.json\\E"
+      },
+      {
+        "pattern": "\\Qlog4j2-test15615099.properties\\E"
+      },
+      {
+        "pattern": "\\Qlog4j2-test15615099.xml\\E"
+      },
+      {
+        "pattern": "\\Qlog4j2-test15615099.yaml\\E"
+      },
+      {
+        "pattern": "\\Qlog4j2-test15615099.yml\\E"
+      },
+      {
+        "pattern": "\\Qlog4j215615099.jsn\\E"
+      },
+      {
+        "pattern": "\\Qlog4j215615099.json\\E"
+      },
+      {
+        "pattern": "\\Qlog4j215615099.properties\\E"
+      },
+      {
+        "pattern": "\\Qlog4j215615099.xml\\E"
+      },
+      {
+        "pattern": "\\Qlog4j215615099.yaml\\E"
+      },
+      {
+        "pattern": "\\Qlog4j215615099.yml\\E"
+      },
+      {
+        "pattern": "java.base:\\Qjdk/internal/icu/impl/data/icudt74b/nfkc.nrm\\E"
+      },
+      {
+        "pattern": "java.base:\\Qjdk/internal/icu/impl/data/icudt74b/uprops.icu\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qcom/sun/java/swing/plaf/windows/resources/windows_zh.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qcom/sun/java/swing/plaf/windows/resources/windows_zh_Hans.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qcom/sun/java/swing/plaf/windows/resources/windows_zh_Hans_CN.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qcom/sun/swing/internal/plaf/basic/resources/basic_zh.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qcom/sun/swing/internal/plaf/basic/resources/basic_zh_Hans.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qcom/sun/swing/internal/plaf/basic/resources/basic_zh_Hans_CN.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qsun/awt/resources/awt_zh.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qsun/awt/resources/awt_zh_Hans.properties\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qsun/awt/resources/awt_zh_Hans_CN.properties\\E"
+      },
+      {
+        "pattern": "java.xml:\\Qjdk/xml/internal/jdkcatalog/JDKCatalog.xml\\E"
+      },
+      {
+        "pattern": "jdk.internal.le:\\Qjdk/internal/org/jline/utils/capabilities.txt\\E"
+      },
+      {
+        "pattern": "jdk.internal.le:\\Qjdk/internal/org/jline/utils/windows-vtp.caps\\E"
+      },
+      {
+        "pattern": "jdk.jfr:\\Qjdk/jfr/internal/query/view.ini\\E"
       }
     ]
-  },
-  "bundles": [
-    {
-      "name": "com.sun.java.swing.plaf.windows.resources.windows",
-      "classNames": [
-        "com.sun.java.swing.plaf.windows.resources.windows",
-        "com.sun.java.swing.plaf.windows.resources.windows_zh_CN"
-      ]
-    },
-    {
-      "name": "com.sun.swing.internal.plaf.basic.resources.basic",
-      "classNames": [
-        "com.sun.swing.internal.plaf.basic.resources.basic",
-        "com.sun.swing.internal.plaf.basic.resources.basic_zh_CN"
-      ]
-    },
-    {
-      "name": "sun.awt.resources.awt",
-      "classNames": [
-        "sun.awt.resources.awt",
-        "sun.awt.resources.awt_zh_CN"
-      ]
-    }
-  ]
+  }
 }

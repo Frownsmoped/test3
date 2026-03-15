@@ -1,6 +1,7 @@
 import argparse
 import pathlib
 import shutil
+import struct
 import tempfile
 import zipfile
 from typing import Tuple, Optional
@@ -164,24 +165,53 @@ def verify_sleep_delay_zero(class_bytes: bytes) -> int:
     return found
 
 
+def verify_java_version_upper_bound_relaxed(class_bytes: bytes) -> int:
+    """
+    Verifies the CraftBukkit upper Java class-version guard was relaxed.
+
+    Original bytecode pattern in Main.main:
+        fload <java.class.version>
+        f2d
+        ldc2_w 66.0d
+        dcmpl
+        ifle ...
+
+    For Java 25, class version is 69.0. We patch the referenced CONSTANT_Double
+    from 66.0d to a larger value (currently 99.0d), so newer JDKs are allowed.
+    """
+    cp, offsets = _parse_constant_pool(class_bytes)
+
+    found = 0
+    i = 0
+    end = len(class_bytes) - 8
+    while i < end:
+        if (
+            class_bytes[i] == 0x17       # fload
+            and class_bytes[i + 2] == 0x8D  # f2d
+            and class_bytes[i + 3] == 0x14  # ldc2_w
+            and class_bytes[i + 6] == 0x97  # dcmpl
+            and class_bytes[i + 7] == 0x9E  # ifle
+        ):
+            cp_index = (class_bytes[i + 4] << 8) | class_bytes[i + 5]
+            if 0 < cp_index < len(cp):
+                off = offsets[cp_index]
+                if off is not None and cp[cp_index] and cp[cp_index][0] == 6:
+                    v = struct.unpack(">d", class_bytes[off + 1 : off + 9])[0]
+                    if v <= 66.0:
+                        raise SystemExit(f"VERIFY_FAILED_JAVA_VERSION_UPPER_BOUND_NOT_PATCHED: {v}")
+                    found += 1
+                    i += 8
+                    continue
+        i += 1
+
+    if found == 0:
+        raise SystemExit("VERIFY_FAILED_JAVA_VERSION_CHECK_SEQUENCE_NOT_FOUND")
+    return found
+
+
 def patch_main_class(class_file: str, *, verify: bool = True) -> int:
     p = pathlib.Path(class_file)
     b = bytearray(p.read_bytes())
-
-    def u1(i: int) -> int:
-        return b[i]
-
-    def u2(i: int) -> int:
-        return (b[i] << 8) | b[i + 1]
-
-    def put_u8(i: int, value: int) -> None:
-        b[i] = value & 0xFF
-
-    def put_u4(i: int, value: int) -> None:
-        b[i] = (value >> 24) & 0xFF
-        b[i + 1] = (value >> 16) & 0xFF
-        b[i + 2] = (value >> 8) & 0xFF
-        b[i + 3] = value & 0xFF
 
     def put_u8x8(i: int, value: int) -> None:
         for off in range(8):
@@ -189,6 +219,9 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
 
     def put_u1(i: int, value: int) -> None:
         b[i] = value & 0xFF
+
+    def put_f8(i: int, value: float) -> None:
+        b[i : i + 8] = struct.pack(">d", value)
 
     cp, offsets = _parse_constant_pool(b)
 
@@ -199,7 +232,7 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
     if seconds_field is None or to_millis is None or sleep_method is None:
         raise SystemExit("TARGET_REFS_NOT_FOUND")
 
-    patched = 0
+    sleep_patched = 0
     i = 0
     end = len(b) - 12
     while i < end:
@@ -223,27 +256,52 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
                     put_u1(i + 9, 0x58)   # pop2
                     put_u1(i + 10, 0x00)  # nop
                     put_u1(i + 11, 0x00)  # nop
-                    patched += 1
+                    sleep_patched += 1
                     i += 12
                     continue
         i += 1
 
-    if not patched:
+    java_guard_patched = 0
+    i = 0
+    end = len(b) - 8
+    while i < end:
+        if (
+            b[i] == 0x17       # fload
+            and b[i + 2] == 0x8D  # f2d
+            and b[i + 3] == 0x14  # ldc2_w
+            and b[i + 6] == 0x97  # dcmpl
+            and b[i + 7] == 0x9E  # ifle
+        ):
+            cp_index = (b[i + 4] << 8) | b[i + 5]
+            if 0 < cp_index < len(cp):
+                off = offsets[cp_index]
+                if off is not None and cp[cp_index] and cp[cp_index][0] == 6:
+                    v = struct.unpack(">d", bytes(b[off + 1 : off + 9]))[0]
+                    if v <= 66.0:
+                        put_f8(off + 1, 99.0)
+                        java_guard_patched += 1
+                        i += 8
+                        continue
+        i += 1
+
+    if not sleep_patched and not java_guard_patched:
         # Idempotent behavior: if the class is already patched/neutralized,
         # treat that as success instead of failure.
         try:
             verify_sleep_delay_zero(bytes(b))
+            verify_java_version_upper_bound_relaxed(bytes(b))
             p.write_bytes(b)
             return 0
         except SystemExit:
-            raise SystemExit("SLEEP_SEQUENCE_NOT_FOUND")
+            raise SystemExit("PATCH_TARGETS_NOT_FOUND")
 
     if verify:
         # Verify against the patched bytes before writing to disk.
         verify_sleep_delay_zero(bytes(b))
+        verify_java_version_upper_bound_relaxed(bytes(b))
 
     p.write_bytes(b)
-    return patched
+    return sleep_patched + java_guard_patched
 
 
 if __name__ == "__main__":
@@ -290,15 +348,16 @@ if __name__ == "__main__":
     if not in_jar:
         raw = target.read_bytes()
         if verify_only:
-            n = verify_sleep_delay_zero(raw)
-            print(f"VERIFY OK: {n} sleep sequence(s) patched to 0L in {target}")
+            n_sleep = verify_sleep_delay_zero(raw)
+            n_java = verify_java_version_upper_bound_relaxed(raw)
+            print(f"VERIFY OK: sleep={n_sleep}, java-upper-bound={n_java} in {target}")
             raise SystemExit(0)
 
         count = patch_main_class(str(target), verify=verify)
         if count == 0:
-            print(f"ALREADY PATCHED: wait sequence already neutralized in {target}")
+            print(f"ALREADY PATCHED: wait sequence neutralized and Java upper-bound relaxed in {target}")
         else:
-            print(f"PATCHED Main.class: zeroed {count} sleep delay constant(s) in {target}")
+            print(f"PATCHED Main.class: applied {count} patch(es) in {target}")
         raise SystemExit(0)
 
     # --- jar mode ---
@@ -312,8 +371,9 @@ if __name__ == "__main__":
             raise SystemExit(f"JAR_ENTRY_NOT_FOUND: {entry_zip} in {target}")
 
     if verify_only:
-        n = verify_sleep_delay_zero(raw)
-        print(f"VERIFY OK: {n} sleep sequence(s) patched to 0L in {target}!{entry_zip}")
+        n_sleep = verify_sleep_delay_zero(raw)
+        n_java = verify_java_version_upper_bound_relaxed(raw)
+        print(f"VERIFY OK: sleep={n_sleep}, java-upper-bound={n_java} in {target}!{entry_zip}")
         raise SystemExit(0)
 
     # Patch entry by extracting -> patch_main_class -> rebuild jar to avoid duplicate entries.
@@ -336,6 +396,6 @@ if __name__ == "__main__":
         shutil.copyfile(tmp_jar, target)
 
     if count == 0:
-        print(f"ALREADY PATCHED JAR: {target}!{entry_zip} already neutralized")
+        print(f"ALREADY PATCHED JAR: {target}!{entry_zip} already neutralized / relaxed")
     else:
-        print(f"PATCHED JAR: updated {target}!{entry_zip} (zeroed {count} sleep constant(s))")
+        print(f"PATCHED JAR: updated {target}!{entry_zip} (applied {count} patch(es))")

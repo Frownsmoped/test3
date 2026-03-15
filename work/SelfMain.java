@@ -48,16 +48,27 @@ public final class SelfMain {
         }
 
         // Delegate to the real server main.
-        // Force --nogui and inject --port while preserving user args.
+        // Force unsupported terminal mode in native-image builds to avoid JLine/Jansi native console init.
+        System.setProperty("jline.terminal", "jline.UnsupportedTerminal");
+
+        // Force --nogui / --nojline / --noconsole and inject --port while preserving user args.
         String[] forwarded;
         if (args == null || args.length == 0) {
-            forwarded = new String[] { "--nogui", "--port", String.valueOf(port) };
+            forwarded = new String[] {
+                "--nogui",
+                "--nojline",
+                "--noconsole",
+                "--port",
+                String.valueOf(port)
+            };
         } else {
-            forwarded = new String[args.length + 3];
+            forwarded = new String[args.length + 5];
             forwarded[0] = "--nogui";
-            forwarded[1] = "--port";
-            forwarded[2] = String.valueOf(port);
-            System.arraycopy(args, 0, forwarded, 3, args.length);
+            forwarded[1] = "--nojline";
+            forwarded[2] = "--noconsole";
+            forwarded[3] = "--port";
+            forwarded[4] = String.valueOf(port);
+            System.arraycopy(args, 0, forwarded, 5, args.length);
         }
 
         // Call server main via reflection; class name can be overridden by env var.
