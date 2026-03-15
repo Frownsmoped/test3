@@ -124,7 +124,10 @@ def verify_sleep_delay_zero(class_bytes: bytes) -> int:
     sleep_method = _find_methodref(cp, "java/lang/Thread", "sleep", "(J)V")
 
     if seconds_field is None or to_millis is None or sleep_method is None:
-        raise SystemExit("VERIFY_TARGET_REFS_NOT_FOUND")
+        # Compatibility: older CraftBukkit/Spigot builds (e.g. 1.20.2) may not contain
+        # the exact outdated-build wait sequence. In that case, treat as "not present"
+        # instead of failing the whole build.
+        return 0
 
     found = 0
     i = 0
@@ -229,37 +232,36 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
     to_millis = _find_methodref(cp, "java/util/concurrent/TimeUnit", "toMillis", "(J)J")
     sleep_method = _find_methodref(cp, "java/lang/Thread", "sleep", "(J)V")
 
-    if seconds_field is None or to_millis is None or sleep_method is None:
-        raise SystemExit("TARGET_REFS_NOT_FOUND")
-
+    sleep_patch_available = not (seconds_field is None or to_millis is None or sleep_method is None)
     sleep_patched = 0
-    i = 0
-    end = len(b) - 12
-    while i < end:
-        if (
-            b[i] == 0xB2
-            and ((b[i + 1] << 8) | b[i + 2]) == seconds_field
-            and b[i + 3] == 0x14
-            and b[i + 6] == 0xB6
-            and ((b[i + 7] << 8) | b[i + 8]) == to_millis
-            and b[i + 9] == 0xB8
-            and ((b[i + 10] << 8) | b[i + 11]) == sleep_method
-        ):
-            long_cp_index = (b[i + 4] << 8) | b[i + 5]
-            if 0 < long_cp_index < len(cp):
-                off = offsets[long_cp_index]
-                if off is not None and cp[long_cp_index] and cp[long_cp_index][0] == 5:
-                    # Change the CONSTANT_Long value to 0L.
-                    put_u8x8(off + 1, 0)
-                    # Additionally replace invokestatic Thread.sleep(J)V (3 bytes)
-                    # with POP2 + NOP + NOP so the sleep call is removed entirely.
-                    put_u1(i + 9, 0x58)   # pop2
-                    put_u1(i + 10, 0x00)  # nop
-                    put_u1(i + 11, 0x00)  # nop
-                    sleep_patched += 1
-                    i += 12
-                    continue
-        i += 1
+    if sleep_patch_available:
+        i = 0
+        end = len(b) - 12
+        while i < end:
+            if (
+                b[i] == 0xB2
+                and ((b[i + 1] << 8) | b[i + 2]) == seconds_field
+                and b[i + 3] == 0x14
+                and b[i + 6] == 0xB6
+                and ((b[i + 7] << 8) | b[i + 8]) == to_millis
+                and b[i + 9] == 0xB8
+                and ((b[i + 10] << 8) | b[i + 11]) == sleep_method
+            ):
+                long_cp_index = (b[i + 4] << 8) | b[i + 5]
+                if 0 < long_cp_index < len(cp):
+                    off = offsets[long_cp_index]
+                    if off is not None and cp[long_cp_index] and cp[long_cp_index][0] == 5:
+                        # Change the CONSTANT_Long value to 0L.
+                        put_u8x8(off + 1, 0)
+                        # Additionally replace invokestatic Thread.sleep(J)V (3 bytes)
+                        # with POP2 + NOP + NOP so the sleep call is removed entirely.
+                        put_u1(i + 9, 0x58)   # pop2
+                        put_u1(i + 10, 0x00)  # nop
+                        put_u1(i + 11, 0x00)  # nop
+                        sleep_patched += 1
+                        i += 12
+                        continue
+            i += 1
 
     java_guard_patched = 0
     i = 0
@@ -297,6 +299,7 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
 
     if verify:
         # Verify against the patched bytes before writing to disk.
+        # verify_sleep_delay_zero() returns 0 (instead of failing) on older builds without that sequence.
         verify_sleep_delay_zero(bytes(b))
         verify_java_version_upper_bound_relaxed(bytes(b))
 
