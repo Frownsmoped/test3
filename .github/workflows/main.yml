@@ -12,6 +12,9 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: v-1.20.6
+
 jobs:
   build:
     strategy:
@@ -32,7 +35,7 @@ jobs:
     env:
       TARGET_OS: ${{ matrix.os }}
       TARGET_ARCH: ${{ matrix.arch }}
-      SERVER_JAR_URL: "https://getbukkit.org/get/yJASLaaoWP5l3s2iiIBhyXyJi1ulgUGZ"
+      SERVER_JAR_URL: "https://getbukkit.org/get/nAcUVDWHLqoOpnVJ8MsaJCmFcYVlsDfr"
       SERVER_JAR_PATH: "build/server.jar"
 
     steps:
@@ -156,16 +159,18 @@ jobs:
             fi
           done
 
-      - name: Set up date
-        id: date
-        run: echo "DATE=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+      - name: Delete existing release/tag if present
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "${RELEASE_TAG}" --yes --cleanup-tag || true
 
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ env.DATE }}
-          name: Release v${{ env.DATE }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Release ${{ env.RELEASE_TAG }}
           draft: false
           prerelease: false
           files: ./*.zip
