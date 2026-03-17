@@ -32,7 +32,7 @@ jobs:
     env:
       TARGET_OS: ${{ matrix.os }}
       TARGET_ARCH: ${{ matrix.arch }}
-      SERVER_JAR_URL: "https://getbukkit.org/get/QRmEAkJCu1HcZkgxVSmVgHZYwZ03Ua1R"
+      SERVER_JAR_URL: "https://getbukkit.org/get/yJASLaaoWP5l3s2iiIBhyXyJi1ulgUGZ"
       SERVER_JAR_PATH: "build/server.jar"
 
     steps:
