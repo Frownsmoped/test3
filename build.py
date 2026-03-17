@@ -482,10 +482,29 @@ def build_native_image(classpath_joined: str, extra_args: list[str]) -> None:
         "--enable-native-access=ALL-UNNAMED",
         "-H:+SharedArenaSupport",
         "--initialize-at-build-time=net.minecraft.util.profiling.jfr.event",
-        "--initialize-at-build-time=org.apache.logging.log4j,org.apache.logging.slf4j,org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry",
-        "--initialize-at-build-time=org.fusesource.jansi",
         "--initialize-at-run-time=joptsimple",
     ]
+
+    # Log4j/Jansi behave differently across platforms under native-image.
+    # On Windows, build-time initialization has been working with the current setup.
+    # On Linux/macOS, build-time initialization can pull Jansi/Log4j objects into the
+    # image heap or trigger OS-specific static init too early, so defer them to runtime.
+    if system_name == "windows":
+        args.append(
+            "--initialize-at-build-time="
+            "org.apache.logging.log4j,"
+            "org.apache.logging.slf4j,"
+            "org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry"
+        )
+        args.append("--initialize-at-build-time=org.fusesource.jansi")
+    else:
+        args.append(
+            "--initialize-at-run-time="
+            "org.apache.logging.log4j,"
+            "org.apache.logging.slf4j,"
+            "org.apache.logging.log4j.core.util.DefaultShutdownCallbackRegistry"
+        )
+        args.append("--initialize-at-run-time=org.fusesource.jansi")
 
     if system_name == "linux":
         args.append("--gc=G1")

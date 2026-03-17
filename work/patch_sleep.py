@@ -171,12 +171,13 @@ def verify_java_version_upper_bound_relaxed(class_bytes: bytes) -> int:
     Original bytecode pattern in Main.main:
         fload <java.class.version>
         f2d
-        ldc2_w 66.0d
+        ldc2_w <upper-bound>.0d
         dcmpl
         ifle ...
 
-    For Java 25, class version is 69.0. We patch the referenced CONSTANT_Double
-    from 66.0d to a larger value (currently 99.0d), so newer JDKs are allowed.
+    Different server versions may encode different upper bounds (e.g. 66.0d for
+    Java 22 / 67.0d for Java 23). We normalize the referenced CONSTANT_Double to
+    99.0d so newer JDKs are allowed.
     """
     cp, offsets = _parse_constant_pool(class_bytes)
 
@@ -196,7 +197,7 @@ def verify_java_version_upper_bound_relaxed(class_bytes: bytes) -> int:
                 off = offsets[cp_index]
                 if off is not None and cp[cp_index] and cp[cp_index][0] == 6:
                     v = struct.unpack(">d", class_bytes[off + 1 : off + 9])[0]
-                    if v <= 66.0:
+                    if v < 99.0:
                         raise SystemExit(f"VERIFY_FAILED_JAVA_VERSION_UPPER_BOUND_NOT_PATCHED: {v}")
                     found += 1
                     i += 8
@@ -276,7 +277,7 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
                 off = offsets[cp_index]
                 if off is not None and cp[cp_index] and cp[cp_index][0] == 6:
                     v = struct.unpack(">d", bytes(b[off + 1 : off + 9]))[0]
-                    if v <= 66.0:
+                    if v < 99.0:
                         put_f8(off + 1, 99.0)
                         java_guard_patched += 1
                         i += 8
