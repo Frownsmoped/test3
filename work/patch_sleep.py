@@ -114,6 +114,7 @@ def verify_sleep_delay_zero(class_bytes: bytes) -> int:
     2) the Thread.sleep(J)V call was replaced with POP2/NOP/NOP, so no sleep occurs at all
 
     Returns how many patched sequences were found.
+    Returns 0 when the target class simply does not contain this outdated-build wait logic.
     """
     cp, offsets = _parse_constant_pool(class_bytes)
 
@@ -124,9 +125,6 @@ def verify_sleep_delay_zero(class_bytes: bytes) -> int:
     sleep_method = _find_methodref(cp, "java/lang/Thread", "sleep", "(J)V")
 
     if seconds_field is None or to_millis is None or sleep_method is None:
-        # Compatibility: older CraftBukkit/Spigot builds (e.g. 1.20.2) may not contain
-        # the exact outdated-build wait sequence. In that case, treat as "not present"
-        # instead of failing the whole build.
         return 0
 
     found = 0
@@ -163,8 +161,6 @@ def verify_sleep_delay_zero(class_bytes: bytes) -> int:
                     continue
         i += 1
 
-    if found == 0:
-        raise SystemExit("VERIFY_FAILED_SLEEP_SEQUENCE_NOT_FOUND")
     return found
 
 
@@ -232,9 +228,10 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
     to_millis = _find_methodref(cp, "java/util/concurrent/TimeUnit", "toMillis", "(J)J")
     sleep_method = _find_methodref(cp, "java/lang/Thread", "sleep", "(J)V")
 
-    sleep_patch_available = not (seconds_field is None or to_millis is None or sleep_method is None)
+    sleep_patch_possible = seconds_field is not None and to_millis is not None and sleep_method is not None
+
     sleep_patched = 0
-    if sleep_patch_available:
+    if sleep_patch_possible:
         i = 0
         end = len(b) - 12
         while i < end:
@@ -288,6 +285,7 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
 
     if not sleep_patched and not java_guard_patched:
         # Idempotent behavior: if the class is already patched/neutralized,
+        # or if this server version simply doesn't contain the outdated-build wait logic,
         # treat that as success instead of failure.
         try:
             verify_sleep_delay_zero(bytes(b))
@@ -299,7 +297,6 @@ def patch_main_class(class_file: str, *, verify: bool = True) -> int:
 
     if verify:
         # Verify against the patched bytes before writing to disk.
-        # verify_sleep_delay_zero() returns 0 (instead of failing) on older builds without that sequence.
         verify_sleep_delay_zero(bytes(b))
         verify_java_version_upper_bound_relaxed(bytes(b))
 

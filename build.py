@@ -382,6 +382,10 @@ def compile_selfmain(classpath_joined: str) -> None:
     if not SELFMAIN_SRC.exists():
         raise SystemExit(f"[ERROR] Missing entrypoint source: {SELFMAIN_SRC}")
 
+    sources = sorted(WORK_DIR.rglob("*.java"))
+    if not sources:
+        raise SystemExit(f"[ERROR] No Java sources found under: {WORK_DIR}")
+
     if SELFMAIN_OUT.exists():
         shutil.rmtree(SELFMAIN_OUT, ignore_errors=True)
     SELFMAIN_OUT.mkdir(parents=True, exist_ok=True)
@@ -389,7 +393,8 @@ def compile_selfmain(classpath_joined: str) -> None:
     cmd = [str(JAVAC_EXEC), "-encoding", "UTF-8"]
     if classpath_joined:
         cmd += ["-cp", classpath_joined]
-    cmd += ["-d", str(SELFMAIN_OUT), str(SELFMAIN_SRC)]
+    cmd += ["-d", str(SELFMAIN_OUT)]
+    cmd += [str(src) for src in sources]
     run(cmd)
 
     if not (SELFMAIN_OUT / "SelfMain.class").exists():
